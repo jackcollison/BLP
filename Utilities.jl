@@ -12,13 +12,13 @@ end
 # Linear models
 function estimate(X::Matrix{Float64}, Y::Matrix{Float64}, Z::Matrix{Float64}=nothing, W::Matrix{Float64}=nothing)
     # Check cases
-    if Z == nothing && W == nothing
+    if Z === nothing && W === nothing
         # Return OLS estimate
         return inv(X.T * X) * X.T * Y
-    elseif Z == nothing && W != nothing
+    elseif Z === nothing && W !== nothing
         # Return FGLS estimate
         return inv(X.T * W * X) * X.T * W * Y
-    elseif Z != nothing && W == nothing
+    elseif Z !== nothing && W === nothing
         # Return IV estimate
         P = Z * inv(Z.T * Z) * Z.Τ
         return inv(X.T * P * X) * X.T * P * Y
@@ -34,7 +34,7 @@ function weight(X::Matrix{Float64}, Y::Matrix{Float64}, θ::Matrix{Float64}, Z::
     ε = Y - X * θ
 
     # Check cases
-    if Z == nothing
+    if Z === nothing
         # Generalized least squares
         return diag(ε.^2)
     end
@@ -49,7 +49,7 @@ function se(X::Matrix{Float64}, Y::Matrix{Float64}, N::Float64, Z::Matrix{Float6
     Γ = nothing
 
     # Check cases
-    if Z == nothing
+    if Z === nothing
         # OLS standard error
         Γ = (1 / N) .* X * X
     else
@@ -58,7 +58,7 @@ function se(X::Matrix{Float64}, Y::Matrix{Float64}, N::Float64, Z::Matrix{Float6
     end
 
     # Return standard errors
-    if W == nothing
+    if W === nothing
         # No weighting matrix
         return sqrt.((1 / N) .* diag(inv(Γ.T * Γ)))
     else
@@ -80,7 +80,7 @@ function fit(X::Matrix{Float64}, Y::Matrix{Float64}, Z::Matrix{Float64}=nothing,
     end
 
     # Check instruments
-    if type in ["IV", "IVGMM"] && Z == nothing
+    if type in ["IV", "IVGMM"] && Z === nothing
         # Raise error
         error("Please input a matrix for Z if you would like to use instrumental variables.")
     end
