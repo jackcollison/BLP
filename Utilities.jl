@@ -14,17 +14,17 @@ function estimate(X::Matrix{Float64}, Y::Matrix{Float64}, Z::Matrix{Float64}=not
     # Check cases
     if Z === nothing && W === nothing
         # Return OLS estimate
-        return inv(X.T * X) * X.T * Y
+        return inv(X' * X) * X' * Y
     elseif Z === nothing && W !== nothing
         # Return FGLS estimate
-        return inv(X.T * W * X) * X.T * W * Y
+        return inv(X' * W * X) * X' * W * Y
     elseif Z !== nothing && W === nothing
         # Return IV estimate
-        P = Z * inv(Z.T * Z) * Z.Τ
-        return inv(X.T * P * X) * X.T * P * Y
+        P = Z * inv(Z' * Z) * Z.Τ
+        return inv(X' * P * X) * X' * P * Y
     else
         # Return IV FGLS estimate
-        return inv(X.T * Z * W * Z.T * X) * X.T * Z * W * Z.T * Y
+        return inv(X' * Z * W * Z' * X) * X' * Z * W * Z' * Y
     end
 end
 
@@ -36,11 +36,11 @@ function weight(X::Matrix{Float64}, Y::Matrix{Float64}, θ::Matrix{Float64}, Z::
     # Check cases
     if Z === nothing
         # Generalized least squares
-        return diag(ε.^2)
+        return diagm(ε.^2)
     end
 
     # Instrumental variables
-    return inv(Z.T * diag(ε.^2) * Z)
+    return inv(Z' * diagm(ε.^2) * Z)
 end
 
 # Estimate standard errors
@@ -54,16 +54,16 @@ function se(X::Matrix{Float64}, Y::Matrix{Float64}, N::Float64, Z::Matrix{Float6
         Γ = (1 / N) .* X * X
     else
         # IV standard error
-        Γ = (1 / N) .* Z.T * X
+        Γ = (1 / N) .* Z' * X
     end
 
     # Return standard errors
     if W === nothing
         # No weighting matrix
-        return sqrt.((1 / N) .* diag(inv(Γ.T * Γ)))
+        return sqrt.((1 / N) .* diag(inv(Γ' * Γ)))
     else
         # Use weighting matrix
-        return sqrt.((1 / N) .* diag(inv(Γ.T * W * Γ)))
+        return sqrt.((1 / N) .* diag(inv(Γ' * W * Γ)))
     end
 end
 
@@ -88,7 +88,7 @@ function fit(X::Matrix{Float64}, Y::Matrix{Float64}, Z::Matrix{Float64}=nothing,
     # Check cases
     if type == "IVGMM"
         # Initial weight matrix for IVGMM
-        W = inv(Z.T * Z)
+        W = inv(Z' * Z)
     end
 
     # Estimate parameters

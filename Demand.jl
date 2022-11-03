@@ -1,5 +1,5 @@
 # Import required libraries
-using Parameters, LinearAlgebra
+using Parameters, LinearAlgebra, SparseArrays
 include("Utilities.jl")
 
 # Multinomial logit function
@@ -25,7 +25,8 @@ function Λ(δ::Array{Float64}, X::Array{Float64}, ν::Array{Float64}, Σ::Array
         # Check for demographics
         if D !== nothing && Π !== nothing
             # Add demographics
-            x += sum((D[i, :] .* X) * Π, dims=2)
+            x += sum((D[i, :] .* X) * Π)
+            # TODO: Check dims=2
         end
 
         # Evaluate probability
@@ -39,7 +40,7 @@ end
 # Simulated shares
 function σ(δ::Array{Float64}, X::Array{Float64}, ν::Array{Float64}, Σ::Array{Float64}, R::Int64; D::Array{Float64}=nothing, Π::Array{Float64}=nothing)
     # Return predicted shares
-    return mean(Λ(δ, X, ν, Σ, R, D=D, Π=Π), dims=1)
+    return mean(Λ(δ, X, ν, Σ, R, D=D, Π=Π), dims=2)
 end
 
 # Contraction mapping within a market
@@ -54,11 +55,12 @@ function contraction_mapping_market(δ::Array{Float64}, δ₀::Array{Float64}, X
 
         # Update previous and iterate
         δ₀ = δ
-        δ += log.(shares) - σ(δ, X, ν, Σ, R, D=D, Π=Π)
+        δ = (δ₀ .* shares) ./ σ(δ₀, X, ν, Σ, R, D=D, Π=Π)
+        # TODO: If close enough, we can take a Newton step
     end
 
     # Return value
-    return δ
+    return log.(δ)
 end
 
 # Contraction mapping
@@ -71,8 +73,15 @@ function contraction_mapping(δ₀::Array{Float64}, X::Array{Float64}, shares::A
     for (m, market) in enumerate(unique(markets))
         # Filter to market and contract
         index = (markets .== market)
-        δ[index] = contraction_mapping_market(δ[index], δ₀[index], X[index,:], shares[index], ν[m,:,:], Σ, R, tol=tol, maxiter=maxiter, D=D[m,:,:], Π=Π)
-        # TODO: Handle case when D, Π are nothing objects because we can't apply the index mask
+
+        # Check demographics
+        Dₘ = nothing
+        if D !== nothing
+            Dₘ = D[m,:,:]
+        end
+
+        # Compute δ by market
+        δ[index] = contraction_mapping_market(δ[index], δ₀[index], X[index,:], shares[index], ν[m,:,:], Σ, R, tol=tol, maxiter=maxiter, D=Dₘ, Π=Π)
     end
 
     # Return value
@@ -81,24 +90,13 @@ end
 
 # Objective function
 function gmm(θ₂::Array{Float64}, X₁::Array{Float64}, X₂::Array{Float64}, Z::Array{Float64}, shares::Array{Float64}, δ₀::Array{Float64}, markets::Array{Float64}, W::Array{Float64}, ν::Array{Float64}; D::Array{Float64}=nothing, index::Array{Float64}=nothing, verbose::Bool=false, tol::Float64=1e-10)
-    # Note: Index is 4x5 binary matrix and θ₂ is of length K, where K is the number of non-zero elements of Σ and Π
+    # Note: Index is a list of two with row and column indices of zeros
     # TODO: Test indexing works
 
     # Initialize Σ and Π
-    Σ = θ₂[1:size(X1, 2)]
+    Σ = nothing
     Π = nothing
-    if size(θ₂) > size(X₁, 2)
-        Π = zeros(size(index))
-        counter = 1
-        for i = 1:size(Π, 1)
-            for j = 1:size(Π, 2)
-                if index[i, j] > 0
-                    Π[i, j] = θ₂[size(X1, 2) + counter]
-                    counter += 1
-                end
-            end
-        end
-    end
+    # TODO: Convert to sparse array version
 
     # Contraction mapping
     δ = contraction_mapping(δ₀, X₂, shares, ν, Σ, markets, tol=tol, maxiter=maxiter, verbose=verbose, D=D, Π=Π)
@@ -110,8 +108,8 @@ function gmm(θ₂::Array{Float64}, X₁::Array{Float64}, X₂::Array{Float64}, 
 
     # Obtain residuals and compute GMM criterion
     ξ = δ - X₁ * θ₁
-    g = mean(Z * ξ, dims=1)
-    val = g.T * W * g
+    g = mean(Z' * ξ, dims=2)
+    val = g' * W * g
 
     # Return value
     return val, θ₁, s₁, ξ
@@ -133,11 +131,30 @@ function blp(results::Demand)
     # Print statement
     println("Beginning to fit BLP model...")
 
+    # Get indices of non-zero elements
+    Σᵢ = findall(x -> x != 0, Σ)
+    Πᵢ = nothing 
+    if D !== nothing && Π !== nothing 
+        Πᵢ = findall(x -> x != 0, Π)
+    end
+    index = [Σᵢ, Πᵢ]
+
+    # Flatten for optimization routine
+    θ₂ = Σ[Σᵢ]
+    if Π !== nothing
+        Πₓ = Π[Πᵢ]
+        θ₂ = vcat(θ₂, Πₓ[:])
+    end
+
     # Objective function wrapper
     function obj(θ₂)
         # Call original GMM criterion
         val, results.θ₁, results.s₁, ξ = gmm(θ₂, X₁, X₂, Z, shares, δ₀, markets, W, ν, D=D, index=index, verbose=verbose, tol=tol)
+        return val
     end
+
+    # Optimize first stage GMM
+    # TODO: Implement
 end
 
 # Structure for results
@@ -145,4 +162,7 @@ struct Demand
     # Results
     θ₁::Array{Float64}
     s₁::Array{Float64}
+
+    # TODO: Store p(x)
+    # TODO: Store αᵢ
 end
