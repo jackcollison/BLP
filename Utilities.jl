@@ -71,7 +71,7 @@ end
 function fit(X::Matrix{Float64}, Y::Matrix{Float64}, Z::Matrix{Float64}=nothing, type::String="OLS")
     # Initialize
     W = nothing
-    N, K = size(X)
+    N= size(X, 1)
 
     # Check input
     if !(type in ["OLS", "FGLS", "IV", "IVGMM"])

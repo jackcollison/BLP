@@ -12,25 +12,34 @@ function p(x)
     return n ./ (exp.(-m) + sum(n))
 end
 
+# Find μ
+function μ(X::Array{Float64}, ν::Array{Float64}, Σ::Array{Float64}, R::Int64; D::Array{Float64}=nothing, Π::Array{Float64}=nothing)
+    # Initialize results
+    m = zeros(size(X, 1), R)
+
+    # Iterate over individuals
+    for i = 1:R
+        # Increment value
+        m[i] = (ν[i, :] .* X) * Σ
+
+        # Check for demographics
+        if D !== nothing && Π !== nothing
+            # Add demographics
+            m[i] += sum((D[i, :] .* X) * Π)
+            # TODO: Check dims=2
+        end
+    end
+end
+
 # Choice probability
-function Λ(δ::Array{Float64}, X::Array{Float64}, ν::Array{Float64}, Σ::Array{Float64}, R::Int64; D::Array{Float64}=nothing, Π::Array{Float64}=nothing)
+function Λ(δ::Array{Float64}, μ::Array{Float64}, R::Int64)
     # Initialize BxR values
     s = zeros(size(δ, 1), R)
 
     # Iterate over individuals
     for i = 1:R
-        # Increment value
-        x = δ + (ν[i,:] .* X) * Σ
-
-        # Check for demographics
-        if D !== nothing && Π !== nothing
-            # Add demographics
-            x += sum((D[i, :] .* X) * Π)
-            # TODO: Check dims=2
-        end
-
         # Evaluate probability
-        s[:, i] = p(x)
+        s[:, i] = p(δ + μ[i])
     end
 
     # Return value
@@ -38,14 +47,22 @@ function Λ(δ::Array{Float64}, X::Array{Float64}, ν::Array{Float64}, Σ::Array
 end
 
 # Simulated shares
-function σ(δ::Array{Float64}, X::Array{Float64}, ν::Array{Float64}, Σ::Array{Float64}, R::Int64; D::Array{Float64}=nothing, Π::Array{Float64}=nothing)
+function σ(δ::Array{Float64}, μₘ::Array{Float64}, R::Int64)
     # Return predicted shares
-    return mean(Λ(δ, X, ν, Σ, R, D=D, Π=Π), dims=2)
+    return mean(Λ(δ, μₘ, R), dims=2)
+end
+
+# Jacobian
+function jacobian(σₘ::Array{Float64}, J::Int64, R::Int64)
+    # Return value
+    (1 / R) .* I(J) * (σₘ .* (1 .- σₘ)') - (1 / R) .* (1 .- I(J)) * (σₘ * σₘ')
 end
 
 # Contraction mapping within a market
-function contraction_mapping_market(δ::Array{Float64}, δ₀::Array{Float64}, X::Array{Float64}, shares::Array{Float64}, ν::Array{Float64}, Σ::Array{Float64}, R::Float64; tol::Float64=1e-10, maxiter::Int64=1000, D::Array{Float64}=nothing, Π::Array{Float64}=nothing)
-    # Initialize counter
+function contraction_mapping_market(δ::Array{Float64}, δ₀::Array{Float64}, X::Array{Float64}, shares::Array{Float64}, ν::Array{Float64}, Σ::Array{Float64}, R::Float64; tol::Float64=1e-10, newton_tol::Float64=1.0, maxiter::Int64=1000, D::Array{Float64}=nothing, Π::Array{Float64}=nothing)
+    # Initialize μₘ, counter
+    μₘ = μ(X, ν, Σ, R, D=D, Π=Π)
+    J = length(shares)
     i = 0
 
     # Iterate while error is large
@@ -55,16 +72,25 @@ function contraction_mapping_market(δ::Array{Float64}, δ₀::Array{Float64}, X
 
         # Update previous and iterate
         δ₀ = δ
-        δ = (δ₀ .* shares) ./ σ(δ₀, X, ν, Σ, R, D=D, Π=Π)
-        # TODO: If close enough, we can take a Newton step
+        σₘ = σ(δ₀, μₘ, R)
+
+        # Check Newton step error condition
+        if maximum(abs.(δ .- δ₀)) > newton_tol
+            # Contraction mapping
+            δ = δ₀ .+ log.(shares) .- log.(σₘ)
+        else
+            # Newton step
+            Δ = jacobian(σₘ, J, R)
+            δ = δ₀ + inv(Δ) * (log.(shares) .- log.(σₘ))
+        end
     end
 
     # Return value
-    return log.(δ)
+    return δ
 end
 
 # Contraction mapping
-function contraction_mapping(δ₀::Array{Float64}, X::Array{Float64}, shares::Array{Float64}, ν::Array{Float64}, Σ::Array{Float64}, markets::Array{Float64}; tol::Float64=1e-10, maxiter::Int64=1000, verbose::Bool=false, D::Array{Float64}=nothing, Π::Array{Float64}=nothing)
+function contraction_mapping(δ₀::Array{Float64}, X::Array{Float64}, shares::Array{Float64}, ν::Array{Float64}, Σ::Array{Float64}, markets::Array{Float64}; tol::Float64=1e-12, newton_tol::Float64=1.0, maxiter::Int64=1000, verbose::Bool=false, D::Array{Float64}=nothing, Π::Array{Float64}=nothing)
     # Initialize δ
     δ = zeros(size(markets, 1))
 
@@ -81,7 +107,7 @@ function contraction_mapping(δ₀::Array{Float64}, X::Array{Float64}, shares::A
         end
 
         # Compute δ by market
-        δ[index] = contraction_mapping_market(δ[index], δ₀[index], X[index,:], shares[index], ν[m,:,:], Σ, R, tol=tol, maxiter=maxiter, D=Dₘ, Π=Π)
+        δ[index] = contraction_mapping_market(δ[index], δ₀[index], X[index,:], shares[index], ν[m,:,:], Σ, R, tol=tol, newton_tol=newton_tol, maxiter=maxiter, D=Dₘ, Π=Π)
     end
 
     # Return value
@@ -89,7 +115,7 @@ function contraction_mapping(δ₀::Array{Float64}, X::Array{Float64}, shares::A
 end
 
 # Objective function
-function gmm(θ₂::Array{Float64}, X₁::Array{Float64}, X₂::Array{Float64}, Z::Array{Float64}, shares::Array{Float64}, δ₀::Array{Float64}, markets::Array{Float64}, W::Array{Float64}, ν::Array{Float64}; D::Array{Float64}=nothing, index::Array{Float64}=nothing, verbose::Bool=false, tol::Float64=1e-10)
+function gmm(θ₂::Array{Float64}, X₁::Array{Float64}, X₂::Array{Float64}, Z::Array{Float64}, shares::Array{Float64}, δ₀::Array{Float64}, markets::Array{Float64}, W::Array{Float64}, ν::Array{Float64}; D::Array{Float64}=nothing, index::Array{Float64}=nothing, verbose::Bool=false, tol::Float64=1e-10, newton_tol::Float64=1.0)
     # Note: Index is a list of two with row and column indices of zeros
     # TODO: Test indexing works
 
@@ -99,7 +125,7 @@ function gmm(θ₂::Array{Float64}, X₁::Array{Float64}, X₂::Array{Float64}, 
     # TODO: Convert to sparse array version
 
     # Contraction mapping
-    δ = contraction_mapping(δ₀, X₂, shares, ν, Σ, markets, tol=tol, maxiter=maxiter, verbose=verbose, D=D, Π=Π)
+    δ = contraction_mapping(δ₀, X₂, shares, ν, Σ, markets, tol=tol, newton_tol=newton_tol, maxiter=maxiter, verbose=verbose, D=D, Π=Π)
 
     # Fit linear model
     m = fit(X₁, δ, Z, "IVGMM")
@@ -113,11 +139,6 @@ function gmm(θ₂::Array{Float64}, X₁::Array{Float64}, X₂::Array{Float64}, 
 
     # Return value
     return val, θ₁, s₁, ξ
-end
-
-# Jacobian
-function jacobian(x)
-    return nothing
 end
 
 # Standard errors
