@@ -62,7 +62,7 @@ function jacobian(σₘ::Array{Float64}, J::Int64, R::Int64)
 end
 
 # Contraction mapping within a market
-function contraction_mapping_market(δ::Array{Float64}, δ₀::Array{Float64}, X::Array{Float64}, shares::Array{Float64}, ν::Array{Float64}, Σ::Array{Float64}, R::Float64; tol::Float64=1e-10, newton_tol::Float64=1.0, maxiter::Int64=1000, D::Array{Float64}=nothing, Π::Array{Float64}=nothing)
+function contraction_mapping_market(δ::Array{Float64}, δ₀::Array{Float64}, X::Array{Float64}, shares::Array{Float64}, ν::Array{Float64}, Σ::Array{Float64}, R::Float64; tol::Float64=1e-10, newton_tol::Float64=1.0, maxiter::Int64=1000, newton::Bool=true, D::Array{Float64}=nothing, Π::Array{Float64}=nothing)
     # Initialize μₘ, counter
     μₘ = μ(X, ν, Σ, R, D=D, Π=Π)
     J = length(shares)
@@ -78,13 +78,13 @@ function contraction_mapping_market(δ::Array{Float64}, δ₀::Array{Float64}, X
         σₘ = σ(δ₀, μₘ, R)
 
         # Check Newton step error condition
-        if maximum(abs.(δ .- δ₀)) > newton_tol
-            # Contraction mapping
-            δ = δ₀ .+ log.(shares) .- log.(σₘ)
-        else
+        if maximum(abs.(δ .- δ₀)) <= newton_tol && newton
             # Newton step
             Δ = jacobian(σₘ, J, R)
             δ = δ₀ + inv(Δ) * (log.(shares) .- log.(σₘ))
+        else
+            # Contraction mapping
+            δ = δ₀ .+ log.(shares) .- log.(σₘ)
         end
     end
 
@@ -93,7 +93,7 @@ function contraction_mapping_market(δ::Array{Float64}, δ₀::Array{Float64}, X
 end
 
 # Contraction mapping
-function contraction_mapping(δ₀::Array{Float64}, X::Array{Float64}, shares::Array{Float64}, ν::Array{Float64}, Σ::Array{Float64}, markets::Array{Float64}; tol::Float64=1e-12, newton_tol::Float64=1.0, maxiter::Int64=1000, verbose::Bool=false, D::Array{Float64}=nothing, Π::Array{Float64}=nothing)
+function contraction_mapping(δ₀::Array{Float64}, X::Array{Float64}, shares::Array{Float64}, ν::Array{Float64}, Σ::Array{Float64}, markets::Array{Float64}; tol::Float64=1e-12, newton_tol::Float64=1.0, maxiter::Int64=1000, newton::Bool=true, verbose::Bool=false, D::Array{Float64}=nothing, Π::Array{Float64}=nothing)
     # Initialize δ
     δ = zeros(size(markets, 1))
 
@@ -110,7 +110,7 @@ function contraction_mapping(δ₀::Array{Float64}, X::Array{Float64}, shares::A
         end
 
         # Compute δ by market
-        δ[index] = contraction_mapping_market(δ[index], δ₀[index], X[index,:], shares[index], ν[m,:,:], Σ, R, tol=tol, newton_tol=newton_tol, maxiter=maxiter, D=Dₘ, Π=Π)
+        δ[index] = contraction_mapping_market(δ[index], δ₀[index], X[index,:], shares[index], ν[m,:,:], Σ, R, tol=tol, newton_tol=newton_tol, maxiter=maxiter, newton=newton, D=Dₘ, Π=Π)
     end
 
     # Return value
@@ -118,7 +118,7 @@ function contraction_mapping(δ₀::Array{Float64}, X::Array{Float64}, shares::A
 end
 
 # Objective function
-function gmm(θ₂::Array{Float64}, X₁::Array{Float64}, X₂::Array{Float64}, Z::Array{Float64}, shares::Array{Float64}, δ₀::Array{Float64}, markets::Array{Float64}, W::Array{Float64}, ν::Array{Float64}; D::Array{Float64}=nothing, index::Array{Float64}=nothing, verbose::Bool=false, tol::Float64=1e-10, newton_tol::Float64=1.0)
+function gmm(θ₂::Array{Float64}, X₁::Array{Float64}, X₂::Array{Float64}, Z::Array{Float64}, shares::Array{Float64}, δ₀::Array{Float64}, markets::Array{Float64}, W::Array{Float64}, ν::Array{Float64}; D::Array{Float64}=nothing, index::Array{Float64}=nothing, verbose::Bool=false, tol::Float64=1e-10, newton_tol::Float64=1.0, newton::Bool=true)
     # Note: Index is a list of two with row and column indices of zeros
     # TODO: Test indexing works
 
@@ -128,7 +128,7 @@ function gmm(θ₂::Array{Float64}, X₁::Array{Float64}, X₂::Array{Float64}, 
     # TODO: Convert to sparse array version
 
     # Contraction mapping
-    δ = contraction_mapping(δ₀, X₂, shares, ν, Σ, markets, tol=tol, newton_tol=newton_tol, maxiter=maxiter, verbose=verbose, D=D, Π=Π)
+    δ = contraction_mapping(δ₀, X₂, shares, ν, Σ, markets, tol=tol, newton_tol=newton_tol, maxiter=maxiter, newton=newton, verbose=verbose, D=D, Π=Π)
 
     # Fit linear model
     m = fit(X₁, δ, Z, "IVGMM")
@@ -150,8 +150,8 @@ function blp_se(x)
 end
 
 # Full model
-#X1, X2, Z, share, markets, ν, D, R, Σ, Π, δ_0, method='L-BFGS-B', tol_1=1e-5, tol_2=1e-10, verbose=False
-function blp(results::Demand)
+# TODO: Add proper arguments
+function blp(results::Demand) 
     # Print statement
     println("Beginning to fit BLP model...")
 
@@ -173,12 +173,19 @@ function blp(results::Demand)
     # Objective function wrapper
     function obj(θ₂)
         # Call original GMM criterion
-        val, results.θ₁, results.s₁, ξ = gmm(θ₂, X₁, X₂, Z, shares, δ₀, markets, W, ν, D=D, index=index, verbose=verbose, tol=tol)
+        val, results.θ₁, results.s₁, ξ = gmm(θ₂, X₁, X₂, Z, shares, δ₀, markets, W, ν, D=D, index=index, verbose=verbose, tol=tol, newton_tol=newton_tol, newton=newton)
         return val
     end
 
     # Optimize first stage GMM
     # TODO: Implement
+
+    # TODO: Add option to return after first stage OR to use fixed value for Σ and Π
+
+    # Optimize second stage GMM
+    # TODO: Implement
+    
+    # TODO: Update results structure
 end
 
 # Structure for results
