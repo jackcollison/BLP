@@ -29,6 +29,9 @@ function μ(X::Array{Float64}, ν::Array{Float64}, Σ::Array{Float64}, R::Int64;
             # TODO: Check dims=2
         end
     end
+
+    # Return value
+    return m
 end
 
 # Choice probability
@@ -55,7 +58,7 @@ end
 # Jacobian
 function jacobian(σₘ::Array{Float64}, J::Int64, R::Int64)
     # Return value
-    (1 / R) .* I(J) * (σₘ .* (1 .- σₘ)') - (1 / R) .* (1 .- I(J)) * (σₘ * σₘ')
+    return (1 / R) .* I(J) * (σₘ .* (1 .- σₘ)') - (1 / R) .* (1 .- I(J)) * (σₘ * σₘ')
 end
 
 # Contraction mapping within a market
