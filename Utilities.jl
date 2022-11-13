@@ -7,6 +7,7 @@ struct LGMM
     type::String
     θ::Array{Float64}
     s::Array{Float64}
+    W::Array{Float64}
 end
 
 # Linear models
@@ -112,5 +113,5 @@ function fit(X::Matrix{Float64}, Y::Matrix{Float64}, Z::Matrix{Float64}=nothing,
     s = se(X, Y, N, Z, W)
 
     # Return values
-    return LGMM(type, θ, s)
+    return LGMM(type, θ, s, W)
 end

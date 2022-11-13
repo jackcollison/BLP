@@ -62,9 +62,8 @@ function jacobian(σₘ::Array{Float64}, J::Int64, R::Int64)
 end
 
 # Contraction mapping within a market
-function contraction_mapping_market(δ::Array{Float64}, δ₀::Array{Float64}, X::Array{Float64}, shares::Array{Float64}, ν::Array{Float64}, Σ::Array{Float64}, R::Float64; tol::Float64=1e-10, newton_tol::Float64=1.0, maxiter::Int64=1000, newton::Bool=true, D::Array{Float64}=nothing, Π::Array{Float64}=nothing)
-    # Initialize μₘ, counter
-    μₘ = μ(X, ν, Σ, R, D=D, Π=Π)
+function contraction_mapping_market(δ::Array{Float64}, δ₀::Array{Float64}, μₘ::Array{Float64}, shares::Array{Float64}, R::Float64; tol::Float64=1e-10, newton_tol::Float64=1.0, maxiter::Int64=1000, newton::Bool=true)
+    # Initialize counter
     J = length(shares)
     i = 0
 
@@ -88,14 +87,16 @@ function contraction_mapping_market(δ::Array{Float64}, δ₀::Array{Float64}, X
         end
     end
 
-    # Return value
+    # Return values
     return δ
 end
 
 # Contraction mapping
-function contraction_mapping(δ₀::Array{Float64}, X::Array{Float64}, shares::Array{Float64}, ν::Array{Float64}, Σ::Array{Float64}, markets::Array{Float64}; tol::Float64=1e-12, newton_tol::Float64=1.0, maxiter::Int64=1000, newton::Bool=true, verbose::Bool=false, D::Array{Float64}=nothing, Π::Array{Float64}=nothing)
+function contraction_mapping(results::Demand, δ₀::Array{Float64}, X::Array{Float64}, shares::Array{Float64}, ν::Array{Float64}, Σ::Array{Float64}, markets::Array{Float64}; tol::Float64=1e-12, newton_tol::Float64=1.0, maxiter::Int64=1000, newton::Bool=true, verbose::Bool=false, D::Array{Float64}=nothing, Π::Array{Float64}=nothing)
     # Initialize δ
     δ = zeros(size(markets, 1))
+    # NOTE: If we sort markets beforehand, we can simply concatenate below rather than using indices
+    #       I like this more general way better, but we could also sort internally in the data cleaning methods
 
     # Iterate over unique markets
     # TODO: Parallelize if it's more efficient
@@ -110,7 +111,11 @@ function contraction_mapping(δ₀::Array{Float64}, X::Array{Float64}, shares::A
         end
 
         # Compute δ by market
-        δ[index] = contraction_mapping_market(δ[index], δ₀[index], X[index,:], shares[index], ν[m,:,:], Σ, R, tol=tol, newton_tol=newton_tol, maxiter=maxiter, newton=newton, D=Dₘ, Π=Π)
+        μₘ = μ(X[index,:], ν[m,:,:], Σ, R, D=Dₘ, Π=Π)
+        δ[index] = contraction_mapping_market(δ[index], δ₀[index], shares[index], μₘ, R, tol=tol, newton_tol=newton_tol, maxiter=maxiter, newton=newton)
+        results.αᵢ[m] .= Λ(δ, μₘ, R)
+        results.Δ[m] .= jacobian(σ(δ, μₘ, R), length(shares[index]), R)
+        # TODO: Initialize results to have correctly sized matrices
     end
 
     # Return value
@@ -173,27 +178,35 @@ function blp(results::Demand)
     # Objective function wrapper
     function obj(θ₂)
         # Call original GMM criterion
-        val, results.θ₁, results.s₁, ξ = gmm(θ₂, X₁, X₂, Z, shares, δ₀, markets, W, ν, D=D, index=index, verbose=verbose, tol=tol, newton_tol=newton_tol, newton=newton)
+        val, results.θ₁, results.s₁, self.ξ = gmm(θ₂, X₁, X₂, Z, shares, δ₀, markets, W, ν, D=D, index=index, verbose=verbose, tol=tol, newton_tol=newton_tol, newton=newton)
         return val
     end
 
     # Optimize first stage GMM
+    S₁ = optimize(θ₂ -> obj(θ₂), θ₂_initial, method)
     # TODO: Implement
 
     # TODO: Add option to return after first stage OR to use fixed value for Σ and Π
 
-    # Optimize second stage GMM
+    # Update weight matrix and re-optimize
+    W = inv((Z .* results.ξ)' * (Z .* results.ξ))
+    S₂ = optimize(θ₂ -> obj(θ₂), S₁.minimizer, method)
     # TODO: Implement
     
     # TODO: Update results structure
+    #       Break it down into Σ and Π? Non-sparse?
+    #       Need standard error calculations
+    results.θ₂ = S₂.minimizer
 end
 
 # Structure for results
 struct Demand
     # Results
-    θ₁::Array{Float64}
-    s₁::Array{Float64}
-
-    # TODO: Store p(x)
-    # TODO: Store αᵢ
+    θ₁::Array{Float64}   # Linear coefficients
+    s₁::Array{Float64}   # Standard error on linear coefficients
+    θ₂::Array{Float64}   # Non-linear coefficients
+    s₂::Array{Float64}   # Standard error on non-linear coefficients
+    ξ::Array{Float64}    # Residual terms from GMM objective
+    αᵢ::Array{Float64}   # Individual coefficients
+    Δ::Array{Float64}    # Jacobian matrix
 end
