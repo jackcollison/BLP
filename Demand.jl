@@ -9,15 +9,13 @@ struct Demand
     θ₁::Array{Float64}   # Linear coefficients
     s₁::Array{Float64}   # Standard error on linear coefficients
     θ₂::Array{Float64}   # Non-linear coefficients
-    # s₂::Array{Float64}   # Standard error on non-linear coefficients
+    s₂::Array{Float64}   # Standard error on non-linear coefficients
+    δ::Array{Float64}    # Mean utilities
     ξ::Array{Float64}    # Residual terms from GMM objective
-    # sᵢ::Array{Float64}   # Individual choice probabilities
-    # Δ::Array{Float64}    # Jacobian matrix
-    # ε::Array{Float64}    # Elasticities
 end
 
 # Contraction mapping within a market
-function ContractionMappingMarket(δ₀, μₘ, shares, R::Int64; tol::Float64=1e-10, maxiter::Int64=1000, verbose::Bool=false)
+function ContractionMappingMarket(δ₀, μₘ, shares, R::Int64; tol::Float64=1e-10, maxiter::Int64=1000, verbose::Int64=0)
     # Initialize values
     error = Inf
     δ = nothing
@@ -37,7 +35,7 @@ function ContractionMappingMarket(δ₀, μₘ, shares, R::Int64; tol::Float64=1
         error = maximum(abs.((δ - δ₀)))
 
         # Print statement
-        if verbose
+        if verbose > 1
             println("Iteration i = ", i, " with error ε = ", error)
         end
 
@@ -50,7 +48,7 @@ function ContractionMappingMarket(δ₀, μₘ, shares, R::Int64; tol::Float64=1
 end
 
 # Contraction mapping
-function ContractionMapping(δ₀, X₂, shares, ν, θ₂, markets; tol::Float64=1e-12, maxiter::Int64=1000, verbose::Bool=false) #, D=nothing, Π=nothing
+function ContractionMapping(δ₀, X₂, shares, ν, θ₂, markets; tol::Float64=1e-12, maxiter::Int64=1000, verbose::Bool=false)
     # Initialize
     δ = zeros(size(markets, 1))
 
@@ -70,7 +68,7 @@ function ContractionMapping(δ₀, X₂, shares, ν, θ₂, markets; tol::Float6
 end
 
 # Objective function
-function GMM(θ₂, data, ins_vars, ex_vars, nl_vars, markets, Z, W, ν, row_index, column_index; tol::Float64=1e-10, maxiter::Int64=1000, verbose::Bool=false)
+function GMM(θ₂, data, ins_vars, ex_vars, nl_vars, markets, Z, W, ν, row_index, column_index; tol::Float64=1e-10, maxiter::Int64=1000, verbose::Int64=0)
     # Re-construct matrix
     θ₂ = Array(sparse(row_index, column_index, θ₂))
 
@@ -83,23 +81,36 @@ function GMM(θ₂, data, ins_vars, ex_vars, nl_vars, markets, Z, W, ν, row_ind
     s₁ = sqrt.(diag(model.vcov))
 
     # Obtain residuals and compute GMM criterion
+    δ = data.delta
     ξ = FixedEffectModels.residuals(model)
     g = mean(Z .* repeat(ξ, outer=[1, size(Z, 2)]), dims=1)
     val = g * inv(W) * g'
 
     # Return value
-    return val[1], θ₁, s₁, ξ
+    return val[1], θ₁, s₁, δ, ξ
 end
 
 # Standard errors
-function BLPSE()
-    return nothing
+function StandardErrors(results, data, nl_vars, markets, Z, W, ν)
+    # Pre-compute values
+    X₂ = Matrix(data[!, nl_vars])
+    M = dδdθ₂(results, X₂, markets, ν)
+    J = size(X₂, 1)
+
+    # Intermediate values
+    Γ = (1 / J) * (Z' - Z' * X₂ * inv(X₂' * Z * inv(W) * Z' * X₂) * X₂' * Z * inv(W) * Z') * M
+    V = Γ' * inv(W) * Γ
+    
+    # Return values
+    return sqrt.(diag(V) ./ J)
 end
 
 # Full model
-function BLP(data::DataFrame, θ::Array{Float64}, ins_vars, ex_vars, nl_vars, markets, ν; tol::Float64=1e-12, maxiter::Int64=1000, verbose::Bool=false)
+function BLP(data::DataFrame, θ::Array{Float64}, ins_vars, ex_vars, nl_vars, markets, ν; tol::Float64=1e-12, maxiter::Int64=1000, verbose::Int64=0)
     # Print statement
-    println("Beginning to fit BLP model...")
+    if verbose > 0
+        println("Beginning to fit BLP model...")
+    end
 
     # Get indices
     index = findall(x -> x != 0, θ)
@@ -116,19 +127,21 @@ function BLP(data::DataFrame, θ::Array{Float64}, ins_vars, ex_vars, nl_vars, ma
     θ₂ = θ[index]
 
     # Initialize results
-    results = Demand(0.0, [0.0], [0.0], θ, [0.0])
+    J = size(data, 1)
+    results = Demand(0.0, [0.0], [0.0], θ, [0.0], [0.0], [0.0])
     Z = Matrix(data[!, ins_vars])
-    W = Z' * Z # TODO: scale by 1 / J (num products)
+    W = (1 / J) * Z' * Z
 
     # Objective function wrapper
     function obj(θ₂)
         # Call original GMM criterion
-        val, θ₁, s₁, ξ = GMM(θ₂, data, ins_vars, ex_vars, nl_vars, markets, Z, W, ν, row_index, column_index; tol=tol, maxiter=maxiter, verbose=verbose)
+        val, θ₁, s₁, δ, ξ = GMM(θ₂, data, ins_vars, ex_vars, nl_vars, markets, Z, W, ν, row_index, column_index; tol=tol, maxiter=maxiter, verbose=verbose)
         
         # Set values in results
         results = @set results.val = val
         results = @set results.θ₁ = θ₁
         results = @set results.s₁ = s₁
+        results = @set results.δ = δ
         results = @set results.ξ = ξ
 
         # Return value
@@ -136,23 +149,35 @@ function BLP(data::DataFrame, θ::Array{Float64}, ins_vars, ex_vars, nl_vars, ma
     end
 
     # Print statement
-    println("First stage...")
+    if verbose > 0
+        println("First stage...")
+    end
 
     # Optimize first stage GMM
-    S₁ = optimize(θ₂ -> obj(θ₂), θ₂, LBFGS()) # TODO: allow bounds input, optim method
+    S₁ = optimize(θ₂ -> obj(θ₂), θ₂, LBFGS())
     θ₂ = S₁.minimizer
 
     # Print statement
-    println("Second stage...")
+    if verbose > 0
+        println("Second stage...")
+    end
 
     # Update weight matrix and re-optimize
-    W = (Z .* results.ξ)' * (Z .* results.ξ) # TODO: scale by 1 / J (num products)
-    S₂ = optimize(θ₂ -> obj(θ₂), S₁.minimizer, LBFGS()) # TODO: allow bounds input, optim method
+    W = (1 / J) * (Z .* results.ξ)' * (Z .* results.ξ)
+    S₂ = optimize(θ₂ -> obj(θ₂), S₁.minimizer, LBFGS())
     θ₂ = Array(sparse(row_index, column_index, S₂.minimizer))
     results = @set results.θ₂ = θ₂
 
+    # Compute standard errors
+    s₂ = StandardErrors(results, data, nl_vars, markets, Z, W, ν)
+    results = @set results.s₂ = Array(sparse(row_index, column_index, s₂))
+
+    # TODO: allow bounds, optimization method choice
+
     # Print statement
-    println("Finished!")
+    if verbose > 0
+        println("Finished!")
+    end
 
     # Return results
     return results
