@@ -106,6 +106,25 @@ function ε(results, data, nl_vars)
     return elasticities
 end
 
+# Own elasticity
+function OwnElasticities(results, data, nl_vars; elasticities=nothing)
+    # Check if already computed
+    if elasticities == nothing
+        # Compute elasticities
+        elasticities = ε(results, data, nl_vars)
+    end
+
+    # Own-price elasticity
+    e = []
+    for i in 1:length(elasticities)
+        # Append own-price elasticities
+        append!(e, diag(elasticities[i]))
+    end
+
+    # Return values
+    return e
+end
+
 # Gradient object
 function dδdθ₂(results, X₂, markets, ν)
     # Initialize

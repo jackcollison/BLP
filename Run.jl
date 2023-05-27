@@ -3,7 +3,6 @@ using DataFrames, CSV, StatFiles
 
 # Include files
 include("Demand.jl")
-# include("Utilities.jl")
 
 # Read data
 dir = "/Users/jackcollison/Desktop/Wisconsin/Coursework/Second Year/Computational/Q2/PS3/"
@@ -40,4 +39,7 @@ markets = data.Year
 
 # Fit BLP model
 demand = @time BLP(data, θ, ins_vars, ex_vars, nl_vars, markets, ν; tol=1e-12, maxiter=1000, verbose=1)
+
+# Compute elasticities
 elasticities = ε(demand, data, nl_vars)
+OwnElasticities(demand, data, nl_vars; elasticities=elasticities)
