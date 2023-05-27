@@ -1,5 +1,5 @@
 # Import required libraries
-using Parameters, LinearAlgebra, SparseArrays, Statistics, DataFrames, FixedEffectModels, Vcov, Setfield
+using Parameters, LinearAlgebra, SparseArrays, Statistics, DataFrames, FixedEffectModels, Vcov, Optim, Setfield
 include("Utilities.jl")
 
 # Structure for results
@@ -48,7 +48,7 @@ function ContractionMappingMarket(δ₀, μₘ, shares, R::Int64; tol::Float64=1
 end
 
 # Contraction mapping
-function ContractionMapping(δ₀, X₂, shares, ν, θ₂, markets; tol::Float64=1e-12, maxiter::Int64=1000, verbose::Bool=false)
+function ContractionMapping(δ₀, X₂, shares, ν, θ₂, markets; tol::Float64=1e-12, maxiter::Int64=1000, verbose::Int64=0)
     # Initialize
     δ = zeros(size(markets, 1))
 

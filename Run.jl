@@ -1,9 +1,9 @@
 # Include libraries
-using DataFrames, CSV, StatFiles, FixedEffectModels, Optim
+using DataFrames, CSV, StatFiles
 
 # Include files
 include("Demand.jl")
-include("Utilities.jl")
+# include("Utilities.jl")
 
 # Read data
 dir = "/Users/jackcollison/Desktop/Wisconsin/Coursework/Second Year/Computational/Q2/PS3/"
@@ -39,5 +39,5 @@ markets = data.Year
 θ = [0.6]
 
 # Fit BLP model
-demand = @time BLP(data, θ, ins_vars, ex_vars, nl_vars, markets, ν; tol=1e-12, maxiter=1000, verbose=0)
+demand = @time BLP(data, θ, ins_vars, ex_vars, nl_vars, markets, ν; tol=1e-12, maxiter=1000, verbose=1)
 elasticities = ε(demand, data, nl_vars)
