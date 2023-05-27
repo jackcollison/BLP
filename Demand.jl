@@ -1,90 +1,48 @@
 # Import required libraries
-using Parameters, LinearAlgebra, SparseArrays
+using Parameters, LinearAlgebra, SparseArrays, Statistics, DataFrames, FixedEffectModels, Vcov, Setfield
 include("Utilities.jl")
 
-# Multinomial logit function
-function p(x)
-    # Overflow trick
-    m = max(0.0, maximum(x))
-    n = exp.(x .- m)
-
-    # Return value
-    return n ./ (exp.(-m) + sum(n))
-end
-
-# Find μ
-function μ(X::Array{Float64}, ν::Array{Float64}, Σ::Array{Float64}, R::Int64; D::Array{Float64}=nothing, Π::Array{Float64}=nothing)
-    # Initialize results
-    m = zeros(size(X, 1), R)
-
-    # Iterate over individuals
-    for i = 1:R
-        # Increment value
-        m[i] = (ν[i, :] .* X) * Σ
-
-        # Check for demographics
-        if D !== nothing && Π !== nothing
-            # Add demographics
-            m[i] += sum((D[i, :] .* X) * Π)
-            # TODO: Check dims=2
-        end
-    end
-
-    # Return value
-    return m
-end
-
-# Choice probability
-function Λ(δ::Array{Float64}, μ::Array{Float64}, R::Int64)
-    # Initialize BxR values
-    s = zeros(size(δ, 1), R)
-
-    # Iterate over individuals
-    for i = 1:R
-        # Evaluate probability
-        s[:, i] = p(δ + μ[i])
-    end
-
-    # Return value
-    return s
-end
-
-# Simulated shares
-function σ(δ::Array{Float64}, μₘ::Array{Float64}, R::Int64)
-    # Return predicted shares
-    return mean(Λ(δ, μₘ, R), dims=2)
-end
-
-# Jacobian
-function jacobian(σₘ::Array{Float64}, J::Int64, R::Int64)
-    # Return value
-    return (1 / R) .* I(J) * (σₘ .* (1 .- σₘ)') - (1 / R) .* (1 .- I(J)) * (σₘ * σₘ')
+# Structure for results
+struct Demand
+    # Results
+    val::Float64         # Value of objective
+    θ₁::Array{Float64}   # Linear coefficients
+    s₁::Array{Float64}   # Standard error on linear coefficients
+    θ₂::Array{Float64}   # Non-linear coefficients
+    # s₂::Array{Float64}   # Standard error on non-linear coefficients
+    ξ::Array{Float64}    # Residual terms from GMM objective
+    # sᵢ::Array{Float64}   # Individual choice probabilities
+    # Δ::Array{Float64}    # Jacobian matrix
+    # ε::Array{Float64}    # Elasticities
 end
 
 # Contraction mapping within a market
-function contraction_mapping_market(δ::Array{Float64}, δ₀::Array{Float64}, μₘ::Array{Float64}, shares::Array{Float64}, R::Float64; tol::Float64=1e-10, newton_tol::Float64=1.0, maxiter::Int64=1000, newton::Bool=true)
-    # Initialize counter
-    J = length(shares)
+function ContractionMappingMarket(δ₀, μₘ, shares, R::Int64; tol::Float64=1e-10, maxiter::Int64=1000, verbose::Bool=false)
+    # Initialize values
+    error = Inf
+    δ = nothing
     i = 0
 
     # Iterate while error is large
-    while maximum(abs.(δ .- δ₀)) > tol && i <= maxiter
+    while error > tol && i <= maxiter
         # Increment counter
         i += 1
 
-        # Update previous and iterate
-        δ₀ = δ
-        σₘ = σ(δ₀, μₘ, R)
+        # Compute choice probabilities
+        σᵢ = P(δ₀ .+ μₘ)
+        σₘ = sum(σᵢ, dims=2) / R
 
-        # Check Newton step error condition
-        if maximum(abs.(δ .- δ₀)) <= newton_tol && newton
-            # Newton step
-            Δ = jacobian(σₘ, J, R)
-            δ = δ₀ + inv(Δ) * (log.(shares) .- log.(σₘ))
-        else
-            # Contraction mapping
-            δ = δ₀ .+ log.(shares) .- log.(σₘ)
+        # Update with contraction mapping
+        δ = δ₀ + log.(shares) - log.(σₘ)
+        error = maximum(abs.((δ - δ₀)))
+
+        # Print statement
+        if verbose
+            println("Iteration i = ", i, " with error ε = ", error)
         end
+
+        # Set new baseline
+        δ₀ = δ
     end
 
     # Return values
@@ -92,30 +50,19 @@ function contraction_mapping_market(δ::Array{Float64}, δ₀::Array{Float64}, �
 end
 
 # Contraction mapping
-function contraction_mapping(results::Demand, δ₀::Array{Float64}, X::Array{Float64}, shares::Array{Float64}, ν::Array{Float64}, Σ::Array{Float64}, markets::Array{Float64}; tol::Float64=1e-12, newton_tol::Float64=1.0, maxiter::Int64=1000, newton::Bool=true, verbose::Bool=false, D::Array{Float64}=nothing, Π::Array{Float64}=nothing)
-    # Initialize δ
+function ContractionMapping(δ₀, X₂, shares, ν, θ₂, markets; tol::Float64=1e-12, maxiter::Int64=1000, verbose::Bool=false) #, D=nothing, Π=nothing
+    # Initialize
     δ = zeros(size(markets, 1))
-    # NOTE: If we sort markets beforehand, we can simply concatenate below rather than using indices
-    #       I like this more general way better, but we could also sort internally in the data cleaning methods
 
     # Iterate over unique markets
-    # TODO: Parallelize if it's more efficient
     for (m, market) in enumerate(unique(markets))
         # Filter to market and contract
         index = (markets .== market)
 
-        # Check demographics
-        Dₘ = nothing
-        if D !== nothing
-            Dₘ = D[m,:,:]
-        end
-
         # Compute δ by market
-        μₘ = μ(X[index,:], ν[m,:,:], Σ, R, D=Dₘ, Π=Π)
-        δ[index] = contraction_mapping_market(δ[index], δ₀[index], shares[index], μₘ, R, tol=tol, newton_tol=newton_tol, maxiter=maxiter, newton=newton)
-        results.αᵢ[m] .= Λ(δ, μₘ, R)
-        results.Δ[m] .= jacobian(σ(δ, μₘ, R), length(shares[index]), R)
-        # TODO: Initialize results to have correctly sized matrices
+        R = size(ν[m], 1)
+        μₘ = μ(X₂[index,:], ν[m], θ₂, R) # might need to change ν[m] index for matrix; need ν to be M x R x nl_var
+        δ[index] = ContractionMappingMarket(δ₀[index], μₘ, shares[index], R, tol=tol, maxiter=maxiter, verbose=verbose)
     end
 
     # Return value
@@ -123,90 +70,90 @@ function contraction_mapping(results::Demand, δ₀::Array{Float64}, X::Array{Fl
 end
 
 # Objective function
-function gmm(θ₂::Array{Float64}, X₁::Array{Float64}, X₂::Array{Float64}, Z::Array{Float64}, shares::Array{Float64}, δ₀::Array{Float64}, markets::Array{Float64}, W::Array{Float64}, ν::Array{Float64}; D::Array{Float64}=nothing, index::Array{Float64}=nothing, verbose::Bool=false, tol::Float64=1e-10, newton_tol::Float64=1.0, newton::Bool=true)
-    # Note: Index is a list of two with row and column indices of zeros
-    # TODO: Test indexing works
-
-    # Initialize Σ and Π
-    Σ = nothing
-    Π = nothing
-    # TODO: Convert to sparse array version
+function GMM(θ₂, data, ins_vars, ex_vars, nl_vars, markets, Z, W, ν, row_index, column_index; tol::Float64=1e-10, maxiter::Int64=1000, verbose::Bool=false)
+    # Re-construct matrix
+    θ₂ = Array(sparse(row_index, column_index, θ₂))
 
     # Contraction mapping
-    δ = contraction_mapping(δ₀, X₂, shares, ν, Σ, markets, tol=tol, newton_tol=newton_tol, maxiter=maxiter, newton=newton, verbose=verbose, D=D, Π=Π)
+    data.delta = ContractionMapping(data.delta_iia, data[!, nl_vars], data.share, ν, θ₂, markets, tol=tol, maxiter=maxiter, verbose=verbose)
 
-    # Fit linear model
-    m = fit(X₁, δ, Z, "IVGMM")
-    θ₁ = m.θ
-    s₁ = m.s
+    # Fixed effects regression
+    model = FixedEffectModels.reg(data, Term.(:delta) ~ (Term.(:price) ~ sum(Term.(Symbol.(ins_vars)))) + sum(Term.(Symbol.(ex_vars))) + fe(:Year), Vcov.robust(), save = true)
+    θ₁ = model.coef
+    s₁ = sqrt.(diag(model.vcov))
 
     # Obtain residuals and compute GMM criterion
-    ξ = δ - X₁ * θ₁
-    g = mean(Z' * ξ, dims=2)
-    val = g' * W * g
+    ξ = FixedEffectModels.residuals(model)
+    g = mean(Z .* repeat(ξ, outer=[1, size(Z, 2)]), dims=1)
+    val = g * inv(W) * g'
 
     # Return value
-    return val, θ₁, s₁, ξ
+    return val[1], θ₁, s₁, ξ
 end
 
 # Standard errors
-function blp_se(x)
+function BLPSE()
     return nothing
 end
 
 # Full model
-# TODO: Add proper arguments
-function blp(results::Demand) 
+function BLP(data::DataFrame, θ::Array{Float64}, ins_vars, ex_vars, nl_vars, markets, ν; tol::Float64=1e-12, maxiter::Int64=1000, verbose::Bool=false)
     # Print statement
     println("Beginning to fit BLP model...")
 
-    # Get indices of non-zero elements
-    Σᵢ = findall(x -> x != 0, Σ)
-    Πᵢ = nothing 
-    if D !== nothing && Π !== nothing 
-        Πᵢ = findall(x -> x != 0, Π)
+    # Get indices
+    index = findall(x -> x != 0, θ)
+    row_index = getindex.(index, [1])
+    column_index = repeat([1], size(row_index,1))
+    
+    # Check dimensions
+    if typeof(index) == Vector{CartesianIndex{2}}
+        # Update index
+        column_index = getindex.(index, [2])
     end
-    index = [Σᵢ, Πᵢ]
 
-    # Flatten for optimization routine
-    θ₂ = Σ[Σᵢ]
-    if Π !== nothing
-        Πₓ = Π[Πᵢ]
-        θ₂ = vcat(θ₂, Πₓ[:])
-    end
+    # Flatten parameters
+    θ₂ = θ[index]
+
+    # Initialize results
+    results = Demand(0.0, [0.0], [0.0], θ, [0.0])
+    Z = Matrix(data[!, ins_vars])
+    W = Z' * Z # TODO: scale by 1 / J (num products)
 
     # Objective function wrapper
     function obj(θ₂)
         # Call original GMM criterion
-        val, results.θ₁, results.s₁, self.ξ = gmm(θ₂, X₁, X₂, Z, shares, δ₀, markets, W, ν, D=D, index=index, verbose=verbose, tol=tol, newton_tol=newton_tol, newton=newton)
+        val, θ₁, s₁, ξ = GMM(θ₂, data, ins_vars, ex_vars, nl_vars, markets, Z, W, ν, row_index, column_index; tol=tol, maxiter=maxiter, verbose=verbose)
+        
+        # Set values in results
+        results = @set results.val = val
+        results = @set results.θ₁ = θ₁
+        results = @set results.s₁ = s₁
+        results = @set results.ξ = ξ
+
+        # Return value
         return val
     end
 
-    # Optimize first stage GMM
-    S₁ = optimize(θ₂ -> obj(θ₂), θ₂_initial, method)
-    # TODO: Implement
+    # Print statement
+    println("First stage...")
 
-    # TODO: Add option to return after first stage OR to use fixed value for Σ and Π
+    # Optimize first stage GMM
+    S₁ = optimize(θ₂ -> obj(θ₂), θ₂, LBFGS()) # TODO: allow bounds input, optim method
+    θ₂ = S₁.minimizer
+
+    # Print statement
+    println("Second stage...")
 
     # Update weight matrix and re-optimize
-    W = inv((Z .* results.ξ)' * (Z .* results.ξ))
-    S₂ = optimize(θ₂ -> obj(θ₂), S₁.minimizer, method)
-    # TODO: Implement
-    
-    # TODO: Update results structure
-    #       Break it down into Σ and Π? Non-sparse?
-    #       Need standard error calculations
-    results.θ₂ = S₂.minimizer
-end
+    W = (Z .* results.ξ)' * (Z .* results.ξ) # TODO: scale by 1 / J (num products)
+    S₂ = optimize(θ₂ -> obj(θ₂), S₁.minimizer, LBFGS()) # TODO: allow bounds input, optim method
+    θ₂ = Array(sparse(row_index, column_index, S₂.minimizer))
+    results = @set results.θ₂ = θ₂
 
-# Structure for results
-struct Demand
-    # Results
-    θ₁::Array{Float64}   # Linear coefficients
-    s₁::Array{Float64}   # Standard error on linear coefficients
-    θ₂::Array{Float64}   # Non-linear coefficients
-    s₂::Array{Float64}   # Standard error on non-linear coefficients
-    ξ::Array{Float64}    # Residual terms from GMM objective
-    αᵢ::Array{Float64}   # Individual coefficients
-    Δ::Array{Float64}    # Jacobian matrix
+    # Print statement
+    println("Finished!")
+
+    # Return results
+    return results
 end
