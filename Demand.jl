@@ -15,7 +15,7 @@ struct Demand
 end
 
 # Contraction mapping within a market
-function ContractionMappingMarket(δ₀, μₘ, shares, R::Int64; tol::Float64=1e-10, maxiter::Int64=1000, verbose::Int64=0)
+function ContractionMappingMarket(δ₀, μₘ, shares, R, tol, maxiter, verbose)
     # Initialize values
     error = Inf
     δ = nothing
@@ -48,7 +48,7 @@ function ContractionMappingMarket(δ₀, μₘ, shares, R::Int64; tol::Float64=1
 end
 
 # Contraction mapping
-function ContractionMapping(δ₀, X₂, shares, ν, θ₂, markets; tol::Float64=1e-12, maxiter::Int64=1000, verbose::Int64=0)
+function ContractionMapping(δ₀, X₂, shares, ν, θ₂, markets, tol, maxiter, verbose)
     # Initialize
     δ = zeros(size(markets, 1))
 
@@ -58,9 +58,9 @@ function ContractionMapping(δ₀, X₂, shares, ν, θ₂, markets; tol::Float6
         index = (markets .== market)
 
         # Compute δ by market
-        R = size(ν[m], 1)
-        μₘ = μ(X₂[index,:], ν[m], θ₂, R) # might need to change ν[m] index for matrix; need ν to be M x R x nl_var
-        δ[index] = ContractionMappingMarket(δ₀[index], μₘ, shares[index], R, tol=tol, maxiter=maxiter, verbose=verbose)
+        R = size(ν[m, :, :], 1)
+        μₘ = μ(X₂[index,:], ν[m, :, :], θ₂, R)
+        δ[index] = ContractionMappingMarket(δ₀[index], μₘ, shares[index], R, tol, maxiter, verbose)
     end
 
     # Return value
@@ -68,25 +68,33 @@ function ContractionMapping(δ₀, X₂, shares, ν, θ₂, markets; tol::Float6
 end
 
 # Objective function
-function GMM(θ₂, data, ins_vars, ex_vars, nl_vars, markets, Z, W, ν, row_index, column_index; tol::Float64=1e-10, maxiter::Int64=1000, verbose::Int64=0)
+function GMM(θ₂, data, ins_vars, ex_vars, nl_vars, markets, Z, W, ν, row_index, column_index, τ, ds, tol, maxiter, verbose)
     # Re-construct matrix
     θ₂ = Array(sparse(row_index, column_index, θ₂))
 
     # Contraction mapping
-    data.delta = ContractionMapping(data.delta_iia, data[!, nl_vars], data.share, ν, θ₂, markets, tol=tol, maxiter=maxiter, verbose=verbose)
+    data.delta = ContractionMapping(data.delta_iia, data[!, nl_vars], data.share, ν, θ₂, markets, tol, maxiter, verbose)
 
     # Fixed effects regression
-    model = FixedEffectModels.reg(data, Term.(:delta) ~ (Term.(:price) ~ sum(Term.(Symbol.(ins_vars)))) + sum(Term.(Symbol.(ex_vars))) + fe(:Year), Vcov.robust(), save = true)
+    model = FixedEffectModels.reg(data, Term.(:delta) ~ (Term.(:price) ~ sum(Term.(Symbol.(ins_vars)))) + sum(Term.(Symbol.(ex_vars))) + fe(:Year), Vcov.robust(), save=true)
     θ₁ = model.coef
     s₁ = sqrt.(diag(model.vcov))
 
-    # Obtain residuals and compute GMM criterion
+    # Obtain residuals
     δ = data.delta
     ξ = FixedEffectModels.residuals(model)
-    g = mean(Z .* repeat(ξ, outer=[1, size(Z, 2)]), dims=1)
-    val = g * inv(W) * g'
+    g₀ = mean(Z .* repeat(ξ, outer=[1, size(Z, 2)]), dims=1)
 
-    # Return value
+    # Extra moments
+    G₁ = 0
+    if τ !== nothing && ds !== nothing
+        dŝ = dsdτ(results, data.type, data[!, nl_vars], markets, ν, τ)
+        ê = dŝ - ds
+        G₁ = ê * inv(W) * ê'
+    end
+
+    # Return GMM criterion
+    val = g₀ * inv(W) * g₀' .+ G₁
     return val[1], θ₁, s₁, δ, ξ
 end
 
@@ -106,7 +114,7 @@ function StandardErrors(results, data, nl_vars, markets, Z, W, ν)
 end
 
 # Full model
-function BLP(data::DataFrame, θ::Array{Float64}, ins_vars, ex_vars, nl_vars, markets, ν; tol::Float64=1e-12, maxiter::Int64=1000, verbose::Int64=0)
+function BLP(data::DataFrame, θ::Array{Float64}, ins_vars, ex_vars, nl_vars, ν; τ=nothing, ds=nothing, tol::Float64=1e-12, maxiter::Int64=1000, verbose::Int64=0)
     # Print statement
     if verbose > 0
         println("Beginning to fit BLP model...")
@@ -129,13 +137,14 @@ function BLP(data::DataFrame, θ::Array{Float64}, ins_vars, ex_vars, nl_vars, ma
     # Initialize results
     J = size(data, 1)
     results = Demand(0.0, [0.0], [0.0], θ, [0.0], [0.0], [0.0])
+    markets = data.market_id
     Z = Matrix(data[!, ins_vars])
     W = (1 / J) * Z' * Z
 
     # Objective function wrapper
     function obj(θ₂)
         # Call original GMM criterion
-        val, θ₁, s₁, δ, ξ = GMM(θ₂, data, ins_vars, ex_vars, nl_vars, markets, Z, W, ν, row_index, column_index; tol=tol, maxiter=maxiter, verbose=verbose)
+        val, θ₁, s₁, δ, ξ = GMM(θ₂, data, ins_vars, ex_vars, nl_vars, markets, Z, W, ν, row_index, column_index, τ, ds, tol, maxiter, verbose)
         
         # Set values in results
         results = @set results.val = val

@@ -56,16 +56,8 @@ function εₘ(results, prices, shares, ν, σᵢ)
     elasticities = zeros(J, J)
     for j = 1:J
         for k = 1:J
-            # Check cases
-            if j == k
-                # Compute derivative
-                dp = PriceDerivative(α, σₚ, νₚ, σᵢ[j, :], σᵢ[k, :], true)
-            else
-                # Compute derivative
-                dp = PriceDerivative(α, σₚ, νₚ, σᵢ[j, :], σᵢ[k, :], false)
-            end
-
             # Compute elasticitity
+            dp = PriceDerivative(α, σₚ, νₚ, σᵢ[j, :], σᵢ[k, :], j == k)
             elasticities[j, k] = dp * prices[k] / shares[j]
         end
     end
@@ -109,14 +101,15 @@ end
 # Own elasticity
 function OwnElasticities(results, data, nl_vars; elasticities=nothing)
     # Check if already computed
-    if elasticities == nothing
+    if elasticities === nothing
         # Compute elasticities
         elasticities = ε(results, data, nl_vars)
     end
 
     # Own-price elasticity
+    N = length(elasticities)
     e = []
-    for i in 1:length(elasticities)
+    for i in 1:N
         # Append own-price elasticities
         append!(e, diag(elasticities[i]))
     end
@@ -159,6 +152,59 @@ function dδdθ₂(results, X₂, markets, ν)
 
         # Concatenate
         M = vcat(M, -inv(dsdδ) * dsdθ₂)
+    end
+
+    # Return object
+    return M
+end
+
+# Tax incidence moments
+function dsdτ(results, products, X₂, markets, ν, τ)
+    # Initialize
+    α = results.θ₁[end]
+    σₚ = results.θ₂[1]
+    M = []
+
+    # Iterate over unique markets
+    for (m, market) in enumerate(unique(markets))
+        # Filter to market and contract
+        index = (markets .== market)
+        νₘ = ν[m]
+        νₚ = νₘ[:, 1]
+        αᵢ = α .+ σₚ .* νₚ
+
+        # Inclusive values
+        R = size(νₘ, 1)
+        X₂ₘ = X₂[index, :]
+        μₘ = μ(X₂ₘ, νₘ, results.θ₂, R)
+        δₘ = results.δ[index]
+        Vᵢ = exp.(δₘ .+ μₘ)
+
+        # Initialize
+        J = sum(index)
+        mo = zeros(J)
+
+        # Construct values
+        dpdτΔτ = zeros(J)
+        for (j, pₘ) in enumerate(products[index])
+            # Initialize
+            dpdτΔτ[j] = 0.0
+
+            # Update value
+            if haskey(τ, pₘ)
+                dpdτΔτ[j] = τ[pₘ]
+            end
+        end
+
+        # Iterate over products
+        for j in 1:J
+            # Compute moments
+            D = 1 .+ sum(Vᵢ[1:end .!= j, :], dims=1)'
+            mo[j] = sum(Vᵢ[j, :] .* αᵢ .* (dpdτΔτ[j] .* D .- sum(dpdτΔτ[1:end .!= j] .* Vᵢ[1:end .!= j, :])) ./ D.^2) / R
+        end
+
+        # Concatenate
+        M = vcat(M, mo)
     end
 
     # Return object
